@@ -27,12 +27,9 @@ from pathlib import Path
 # 1. DATASETS: tag -> folder path
 # ---------------------------------------------------------------------
 DATASETS = {
-    "rdmodel":     "datasets/Rat Detection Model YOLOv10.v1i.yolov8",
-    "ratv3":       "datasets/rat detection.v3i.yolov8",
-    "ratv2":       "datasets/rat.v2-v2.yolov8",
-    "ratv2i":      "datasets/rat.v2i.yolov8",
-    "ratv4":       "datasets/rats.v4i.yolov8",
-    "nightvision": "datasets/nightvision",   # no data.yaml in this one
+    "merged": "datasets/merged",
+    "kaggle": "datasets/dataset_kaggle_1",
+    "ratdet": "datasets/rat_detection.v4i.yolov5pytorch",
 }
 
 OUTPUT_DIR = "datasets/merged_dataset"
@@ -43,43 +40,34 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 # ---------------------------------------------------------------------
 # 2. MANUAL_CLASSES: for any dataset with NO data.yaml, hardcode its
 #    class list here. Position in the list = the class ID that dataset's
-#    .txt label files actually use.
+#    .txt label files actually use. (Empty now -- none of the current
+#    three datasets need this; add an entry here if that changes.)
 # ---------------------------------------------------------------------
-MANUAL_CLASSES = {
-    "nightvision": ["rat"],   # single class, always index 0
-}
+MANUAL_CLASSES = {}
 
 # ---------------------------------------------------------------------
 # 3. ALIASES: raw class name (exactly as it appears in that dataset's
 #    data.yaml "names:" list) -> canonical name to merge it into.
 #
-#    Resolves the specific mess found in your files:
-#      - ratv3's two leftover "project name" classes both actually mean "rat"
-#      - ratv2's "Tikus" is Malay/Indonesian for "rat"
-#      - ratv2's "0" is a suspicious/likely-broken class. It is NOT folded
-#        into "rat" automatically -- it's kept as its own flagged class
-#        ("unknown_0") so you can inspect those specific boxes and decide
-#        whether to keep, relabel, or drop them.
-#
 #    Any raw name not listed here is assumed to already be canonical
 #    (e.g. "rat" maps to itself).
 # ---------------------------------------------------------------------
 ALIASES = {
-    "rat detection - v10 2023-04-10 5-08pm": "rat",
-    "rat detection - v2 2024-08-03 2-50pm": "rat",
-    "Tikus": "rat",
-    "0": "unknown_0",   # deliberately NOT merged into "rat"
+    "mouse": "rat",   # kaggle dataset's class -- same as rat for this project
 }
 
 # Final class list for the merged dataset. Position here = the class ID
-# that will be written into every remapped label file.
-UNIFIED_CLASSES = ["rat", "unknown_0"]
+# that will be written into every remapped label file. unknown_0 has been
+# removed -- it was already manually reviewed and folded into "rat" in an
+# earlier pass, so it's no longer needed here.
+UNIFIED_CLASSES = ["rat"]
 
 
 def load_classes(tag: str, dataset_path: Path):
     """
     Return this dataset's ordered raw class name list (position = its
-    original class ID), either from data.yaml or MANUAL_CLASSES.
+    original class ID), from data.yaml (or MANUAL_CLASSES if the dataset
+    has no yaml at all).
     """
     if tag in MANUAL_CLASSES:
         return MANUAL_CLASSES[tag]
@@ -90,9 +78,17 @@ def load_classes(tag: str, dataset_path: Path):
               f"-- its labels will NOT be remapped (all lines dropped).")
         return []
 
-    with open(yaml_path, "r") as f:
+    with open(yaml_path, "r", encoding="utf-8-sig") as f:
         data = yaml.safe_load(f)
-    return data.get("names", [])
+    if data is None:
+        print(f"[WARNING] '{tag}'s data.yaml is empty or malformed (loaded as None) -- "
+              f"check {yaml_path} by hand. Its labels will NOT be remapped (all lines dropped).")
+        return []
+    names = data.get("names", [])
+    if not names:
+        print(f"[WARNING] '{tag}'s data.yaml has no 'names:' list -- "
+              f"its labels will NOT be remapped (all lines dropped).")
+    return names
 
 
 def build_remap(raw_names):
@@ -148,8 +144,19 @@ def count_images(dataset_path: Path):
 
 
 def find_split_dirs(dataset_path: Path):
+    """
+    Prefer a FLAT structure (dataset_path/images, dataset_path/labels) if
+    it exists -- that's what your current datasets actually look like.
+    Only fall back to checking train/valid/test split subfolders if the
+    flat structure isn't there.
+    """
+    flat_img_dir = dataset_path / "images"
+    if flat_img_dir.exists():
+        yield flat_img_dir, dataset_path / "labels"
+        return
+
     for split in SPLIT_SUBFOLDERS:
-        base = dataset_path / split if split else dataset_path
+        base = dataset_path / split
         img_dir = base / "images"
         lbl_dir = base / "labels"
         if img_dir.exists():

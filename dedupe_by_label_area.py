@@ -1,48 +1,35 @@
 """
-dedupe_images_ssim.py
+dedupe_by_label_area_ssim.py
 
-Compares the FULL, UNCROPPED image (not just the labeled box region) to
-find duplicate / near-duplicate images in the merged dataset. Confirmed
-duplicates (image + label) are moved to a review folder -- nothing is
-deleted.
+Compares the CROPPED LABELED REGION of each image (not the whole picture)
+to find duplicates -- catches cases where the same subject was annotated
+in two different images with different backgrounds/crops around it. Uses
+the same fast two-stage pipeline as dedupe_images_ssim.py so it stays fast
+on large datasets:
 
-WHY TWO STAGES:
-Running SSIM on every possible PAIR of images is O(n^2) and each individual
-comparison is fairly expensive -- on a few thousand images that's millions
-of SSIM calls, which is why the plain SSIM-only version of this script was
-slow. This version fixes that with a two-stage pipeline:
+    Load images + crop labeled boxes
+       |
+    Compute pHash of each crop
+       |
+    Group images with similar crop-hashes (loose threshold, candidate filter)
+       |
+    Run SSIM only inside each group (strict, final confirmation)
 
-    1. Load images
-    2. Compute a pHash (perceptual hash) for every image -- cheap, fast
-    3. Group images with SIMILAR hashes (loose threshold, high recall --
-       this is just a candidate filter, not the final decision)
-    4. Run SSIM only INSIDE each candidate group, to confirm which of the
-       candidates are actually true duplicates (strict threshold, high
-       precision)
+HOW A MATCH IS DECIDED (two things must be true):
+  1. Same number of boxes, and each box's normalized AREA (w*h) matches
+     within AREA_TOLERANCE -- cheap filter, checked first.
+  2. Each box's cropped CONTENT matches via SSIM at or above CONTENT_THRESHOLD.
 
-pHash alone can be fooled by genuinely different images that happen to
-hash similarly (rare, but possible), so SSIM still makes the final call --
-it's just no longer being run on every pair in the whole dataset, only on
-the much smaller set of images that already look close by hash. This
-keeps the expensive comparison scoped to where it's actually needed.
+SAFETY: confirmed duplicates (image + label) are MOVED to a review folder,
+nothing is deleted.
 
-HASH_GROUP_THRESHOLD = 10 (Hamming distance, out of 64 bits): deliberately
-loose. Its only job is to make sure real duplicates aren't missed before
-SSIM gets a chance to look at them -- a few unrelated images ending up in
-the same candidate group is fine and cheap, since SSIM filters those back
-out in the next step.
-
-CONTENT_THRESHOLD = 0.99 (SSIM, -1 to 1 range, 1.0 = structurally
-identical): this is the strict, final decision. Only images that are
-essentially the same picture will be confirmed as duplicates. Lower it
-slightly (e.g. 0.95) if real duplicates are being missed at the SSIM stage.
-
-SAFETY: nothing is deleted. Duplicates are MOVED to a review folder so you
-can double check before permanently removing them.
+NOTE: this version processes every candidate group with SSIM confirmation,
+no matter how large -- nothing is skipped. Large groups will just take
+longer to confirm.
 
 Usage:
     pip install pillow numpy scikit-image imagehash --break-system-packages
-    python dedupe_images_ssim.py
+    python dedupe_by_label_area_ssim.py
 """
 
 import shutil
@@ -55,63 +42,119 @@ from skimage.metrics import structural_similarity as ssim
 import imagehash
 
 MERGED_DIR = "datasets/merged_dataset"
-REVIEW_DIR = "datasets/duplicates_review_ssim"
+REVIEW_DIR = "datasets/duplicates_by_label_review_ssim"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-# Stage 1 (pHash) -- loose candidate filter. See explanation above.
-HASH_SIZE = 8  # 8x8 = 64-bit hash
-HASH_GROUP_THRESHOLD = 10
+# How close two normalized box areas (w*h, both already 0-1) need to be to
+# even bother comparing pixel content. 0.02 = within 2% relative difference.
+AREA_TOLERANCE = 0.02
 
-# Stage 2 (SSIM) -- strict final confirmation. See explanation above.
+# Stage 1 (pHash on the crop) -- loose candidate filter.
+HASH_SIZE = 8  # 8x8 = 64-bit hash
+HASH_GROUP_THRESHOLD = 6
+
+# Stage 2 (SSIM on the crop) -- strict final confirmation (-1 to 1, 1.0 =
+# structurally identical).
 CONTENT_THRESHOLD = 0.99
 
-# Every image is resized to this fixed size before SSIM comparison, so SSIM
-# can compare them (needs matching shapes) and comparison stays fast.
+# Crops are resized to this fixed size for both the pHash and the SSIM
+# comparison, since box crops naturally come out at different pixel sizes.
 COMPARE_SIZE = (128, 128)
 
 
-def build_records(images_dir: Path):
+def parse_boxes(label_path: Path):
+    """Return list of (class_id, x_center, y_center, w, h), all normalized
+    0-1, from a YOLO .txt label file."""
+    boxes = []
+    if not label_path.exists():
+        return boxes
+    for line in label_path.read_text().splitlines():
+        parts = line.strip().split()
+        if len(parts) < 5:
+            continue
+        class_id, xc, yc, w, h = parts[:5]
+        boxes.append((int(class_id), float(xc), float(yc), float(w), float(h)))
+    return boxes
+
+
+def crop_box(im: Image.Image, xc, yc, w, h):
+    """Crop a normalized YOLO box out of a PIL image. Computes pixel
+    width/height first, then derives left/top from the center and that
+    fixed size (rather than rounding all four edges independently) --
+    otherwise two boxes with identical normalized w/h can end up 1px
+    different in size after rounding, throwing off the comparison."""
+    img_w, img_h = im.size
+    box_w = round(w * img_w)
+    box_h = round(h * img_h)
+    center_x = round(xc * img_w)
+    center_y = round(yc * img_h)
+
+    left = max(0, center_x - box_w // 2)
+    top = max(0, center_y - box_h // 2)
+    right = min(img_w, left + box_w)
+    bottom = min(img_h, top + box_h)
+
+    if right <= left or bottom <= top:
+        return None
+    return im.crop((left, top, right, bottom))
+
+
+def build_box_records(images_dir: Path, labels_dir: Path):
     """
-    Load every image once, computing BOTH its pHash (for the fast stage-1
-    candidate filter) and its resized grayscale array (for the stage-2 SSIM
-    confirmation, done later only within candidate groups). Progress shown
-    since this touches every file.
+    For every image that has a label file, crop out each box and compute
+    BOTH its pHash (stage 1) and its resized grayscale array (stage 2).
+    Returns {img_path: [(area, hash_int, gray_array), ...]} sorted by area
+    descending per image.
     """
     image_paths = sorted(p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
     total = len(image_paths)
-    print(f"Loading {total} images and computing pHashes...\n")
+    print(f"Cropping labeled regions for {total} images...\n")
 
-    hashes = {}
-    grays = {}
+    records = {}
     for i, img_path in enumerate(image_paths, start=1):
+        label_path = labels_dir / f"{img_path.stem}.txt"
+        boxes = parse_boxes(label_path)
+        if not boxes:
+            continue
+
         try:
             with Image.open(img_path) as im:
-                im_rgb = im.convert("RGB")
-                hashes[img_path] = int(str(imagehash.phash(im_rgb, hash_size=HASH_SIZE)), 16)
-                gray = im_rgb.convert("L").resize(COMPARE_SIZE, Image.LANCZOS)
-                grays[img_path] = np.array(gray, dtype=np.uint8)
+                im = im.convert("RGB")
+                box_records = []
+                for (_cls, xc, yc, w, h) in boxes:
+                    crop = crop_box(im, xc, yc, w, h)
+                    if crop is None:
+                        continue
+                    area = w * h
+                    h_hash = int(str(imagehash.phash(crop, hash_size=HASH_SIZE)), 16)
+                    gray = crop.convert("L").resize(COMPARE_SIZE, Image.LANCZOS)
+                    gray_array = np.array(gray, dtype=np.uint8)
+                    box_records.append((area, h_hash, gray_array))
+                box_records.sort(key=lambda r: r[0], reverse=True)
+                if box_records:
+                    records[img_path] = box_records
         except Exception as e:
-            print(f"\n[WARNING] Could not load {img_path.name}: {e}")
+            print(f"\n[WARNING] Could not process {img_path.name}: {e}")
 
         pct = i / total * 100 if total else 100
-        sys.stdout.write(f"\r  loaded {i}/{total} ({pct:.1f}%)")
+        sys.stdout.write(f"\r  processed {i}/{total} ({pct:.1f}%)")
         sys.stdout.flush()
 
     print()  # newline after progress line
-    return hashes, grays
+    return records
 
 
-def group_by_hash(hashes: dict, threshold: int):
+def group_by_hash(records: dict, threshold: int):
     """
-    Stage 1: cheap candidate filter. Groups images whose pHash is within
-    `threshold` Hamming-distance bits of each other. Vectorized with numpy
-    in row blocks so it stays fast even on a few thousand images. This is
-    deliberately loose (high recall) -- SSIM makes the final call afterward.
+    Stage 1: cheap candidate filter, using the LARGEST box's pHash per
+    image (the main subject) as a representative signature. Vectorized
+    with numpy in row blocks. Deliberately loose (high recall) -- the
+    final box-by-box area + SSIM check happens in stage 2.
     """
-    paths = list(hashes.keys())
+    paths = list(records.keys())
     n = len(paths)
-    hash_array = np.array([hashes[p] for p in paths], dtype=np.uint64)
+    hash_array = np.array([records[p][0][1] for p in paths], dtype=np.uint64)
     parent = list(range(n))
 
     def find(x):
@@ -125,7 +168,7 @@ def group_by_hash(hashes: dict, threshold: int):
         if ra != rb:
             parent[ra] = rb
 
-    print(f"\nGrouping {n} images by similar pHash (candidate threshold={threshold})...\n")
+    print(f"\nGrouping {n} images by similar crop pHash (candidate threshold={threshold})...\n")
 
     block_size = 500
     for start in range(0, n, block_size):
@@ -155,23 +198,32 @@ def group_by_hash(hashes: dict, threshold: int):
     return [g for g in groups.values() if len(g) > 1]
 
 
-def crops_match(image_a: np.ndarray, image_b: np.ndarray) -> bool:
-    """
-    Compare two (whole, uncropped) images using SSIM. If the score is below
-    CONTENT_THRESHOLD, they're NOT considered the same content.
-    """
-    score = ssim(image_a, image_b)
-    if score < CONTENT_THRESHOLD:
+def boxes_match(boxes_a, boxes_b):
+    """True if two images' box lists are the same length and every box
+    pairs up (by descending area order) within AREA_TOLERANCE and passes
+    SSIM at CONTENT_THRESHOLD."""
+    if len(boxes_a) != len(boxes_b):
         return False
+    for (area_a, _hash_a, gray_a), (area_b, _hash_b, gray_b) in zip(boxes_a, boxes_b):
+        if area_a == 0 or area_b == 0:
+            return False
+        relative_diff = abs(area_a - area_b) / max(area_a, area_b)
+        if relative_diff > AREA_TOLERANCE:
+            return False
+        score = ssim(gray_a, gray_b)
+        if score < CONTENT_THRESHOLD:
+            return False
     return True
 
 
-def confirm_with_ssim(candidate_groups, grays: dict):
+def confirm_with_ssim(candidate_groups, records: dict):
     """
-    Stage 2: within each pHash candidate group (usually small), run pairwise
-    SSIM to confirm true duplicates. A candidate group can split into
-    multiple confirmed groups, or shrink if some members turn out not to
-    really match. Returns the final list of confirmed duplicate groups.
+    Stage 2: within each pHash candidate group, confirm true duplicates
+    using boxes_match() (area + per-box SSIM). Uses greedy
+    cluster-representative matching (compare each image only against
+    existing cluster representatives, not every pair) to stay fast, with
+    per-image progress reporting. Every candidate group is processed here,
+    regardless of size.
     """
     total_candidates = sum(len(g) for g in candidate_groups)
     print(f"\nConfirming {len(candidate_groups)} candidate group(s) "
@@ -180,36 +232,25 @@ def confirm_with_ssim(candidate_groups, grays: dict):
     confirmed_groups = []
     checked = 0
     for group in candidate_groups:
-        parent = {p: p for p in group}
+        clusters = []  # list of lists of paths; clusters[i][0] is the representative
 
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                p1, p2 = group[i], group[j]
-                if crops_match(grays[p1], grays[p2]):
-                    union(p1, p2)
-
-        sub_groups = {}
         for p in group:
-            root = find(p)
-            sub_groups.setdefault(root, []).append(p)
+            placed = False
+            for cluster in clusters:
+                if boxes_match(records[cluster[0]], records[p]):
+                    cluster.append(p)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([p])
 
-        confirmed_groups.extend(g for g in sub_groups.values() if len(g) > 1)
+            checked += 1
+            if checked % 5 == 0 or checked == total_candidates:
+                pct = checked / total_candidates * 100 if total_candidates else 100
+                sys.stdout.write(f"\r  confirmed {checked}/{total_candidates} candidate images ({pct:.1f}%)")
+                sys.stdout.flush()
 
-        checked += len(group)
-        pct = checked / total_candidates * 100 if total_candidates else 100
-        sys.stdout.write(f"\r  confirmed {checked}/{total_candidates} candidate images ({pct:.1f}%)")
-        sys.stdout.flush()
+        confirmed_groups.extend(c for c in clusters if len(c) > 1)
 
     print()  # newline after progress line
     return confirmed_groups
@@ -225,19 +266,23 @@ def main():
     out_images.mkdir(parents=True, exist_ok=True)
     out_labels.mkdir(parents=True, exist_ok=True)
 
-    hashes, grays = build_records(images_dir)
+    records = build_box_records(images_dir, labels_dir)
 
-    if len(hashes) < 2:
-        print("\nNot enough images to compare.")
+    if len(records) < 2:
+        print("\nNot enough labeled images to compare.")
         return
 
-    candidate_groups = group_by_hash(hashes, HASH_GROUP_THRESHOLD)
+    candidate_groups = group_by_hash(records, HASH_GROUP_THRESHOLD)
+    group_sizes = sorted((len(g) for g in candidate_groups), reverse=True)
     print(f"\nFound {len(candidate_groups)} candidate group(s) from pHash pre-filter.")
+    if group_sizes:
+        print(f"  Largest candidate group: {group_sizes[0]} images")
+        print(f"  Top 5 group sizes:       {group_sizes[:5]}")
 
     if not candidate_groups:
         groups = []
     else:
-        groups = confirm_with_ssim(candidate_groups, grays)
+        groups = confirm_with_ssim(candidate_groups, records)
 
     print(f"\nFound {len(groups)} duplicate group(s).\n")
 

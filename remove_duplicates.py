@@ -55,7 +55,7 @@ from skimage.metrics import structural_similarity as ssim
 import imagehash
 
 MERGED_DIR = "datasets/merged_dataset"
-REVIEW_DIR = "datasets/duplicates_review_ssim"
+REVIEW_DIR = "datasets/duplicates_review_ssim_merged"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
