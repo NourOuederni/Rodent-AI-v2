@@ -1,0 +1,1 @@
+{"version": 1, "boundingBoxes": [{"label": "rat", "x": 0, "y": 0, "width": 224, "height": 460}, {"label": "rat", "x": 224, "y": 0, "width": 244, "height": 408}, {"label": "rat", "x": 0, "y": 460, "width": 224, "height": 180}, {"label": "rat", "x": 363, "y": 484, "width": 277, "height": 156}]}
