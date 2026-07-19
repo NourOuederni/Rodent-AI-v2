@@ -23,17 +23,17 @@ def split_dataset_by_background():
     valid_pairs = []
     for file_path in DATASET_DIR.iterdir():
         if file_path.is_file() and file_path.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-            json_path = file_path.with_suffix('.json')
-            if json_path.exists():
+            txt_path = file_path.with_suffix('.txt')
+            if txt_path.exists():
                 try:
                     # Create a fingerprint of the image
                     img_hash = imagehash.phash(Image.open(file_path))
-                    valid_pairs.append((str(img_hash), file_path, json_path))
+                    valid_pairs.append((str(img_hash), file_path, txt_path))
                 except Exception as e:
                     print(f"Could not process {file_path.name}: {e}")
 
     if not valid_pairs:
-        print("No valid image/JSON pairs found.")
+        print("No valid image/TXT pairs found.")
         return
 
     # 2. Sort images by their visual fingerprint!
@@ -82,15 +82,15 @@ def split_dataset_by_background():
 
     print("Step 3: Moving files to training and testing folders...")
     for group in train_groups:
-        for _, img, json_file in group:
+        for _, img, txt_file in group:
             shutil.move(str(img), str(train_dir / img.name))
-            shutil.move(str(json_file), str(train_dir / json_file.name))
+            shutil.move(str(txt_file), str(train_dir / txt_file.name))
             train_count += 1
 
     for group in test_groups:
-        for _, img, json_file in group:
+        for _, img, txt_file in group:
             shutil.move(str(img), str(test_dir / img.name))
-            shutil.move(str(json_file), str(test_dir / json_file.name))
+            shutil.move(str(txt_file), str(test_dir / txt_file.name))
             test_count += 1
 
     print("\n✅ Dataset successfully split by background scene (No Data Leakage)!")
