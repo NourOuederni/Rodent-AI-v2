@@ -1,22 +1,3 @@
-"""
-check_dataset_issues.py
-
-Scans merged_dataset for three types of problems:
-  1. Empty label files      -> 0 bytes, or a .txt with no actual annotation lines
-  2. Malformed label info   -> lines that don't have exactly 5 values
-                                (class x_center y_center width height),
-                                or contain non-numeric values
-  3. Corrupted images       -> images that fail to open/decode
-
-Nothing is moved or deleted. Results are printed to the console and written
-to a CSV report so you can review and decide what to do with each file.
-
-Requires: pillow  (pip install pillow)
-
-Usage:
-    python check_dataset_issues.py
-"""
-
 import csv
 import sys
 from pathlib import Path

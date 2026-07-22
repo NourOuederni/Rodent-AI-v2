@@ -1,23 +1,3 @@
-"""
-merge_datasets_yaml.py
-
-Merges multiple YOLO-format datasets (images/ + labels/) into one combined
-dataset, using each dataset's data.yaml to figure out what its class IDs
-actually mean, then rewriting every label file so class IDs are consistent
-across the merged set.
-
-Why this exists: each of your datasets was exported separately, so class ID 0
-does NOT mean the same thing in every one. This script fixes that instead of
-just dumping label files together blindly.
-
-Usage:
-    1. Edit DATASETS with the path to each dataset folder.
-    2. Edit OUTPUT_DIR to where you want the merged result written.
-    3. Double check ALIASES / MANUAL_CLASSES / UNIFIED_CLASSES match your data.
-    4. pip install pyyaml (if not already installed)
-    5. Run: python merge_datasets_yaml.py
-"""
-
 import shutil
 import sys
 import yaml

@@ -1,37 +1,3 @@
-"""
-dedupe_by_label_area_ssim.py
-
-Compares the CROPPED LABELED REGION of each image (not the whole picture)
-to find duplicates -- catches cases where the same subject was annotated
-in two different images with different backgrounds/crops around it. Uses
-the same fast two-stage pipeline as dedupe_images_ssim.py so it stays fast
-on large datasets:
-
-    Load images + crop labeled boxes
-       |
-    Compute pHash of each crop
-       |
-    Group images with similar crop-hashes (loose threshold, candidate filter)
-       |
-    Run SSIM only inside each group (strict, final confirmation)
-
-HOW A MATCH IS DECIDED (two things must be true):
-  1. Same number of boxes, and each box's normalized AREA (w*h) matches
-     within AREA_TOLERANCE -- cheap filter, checked first.
-  2. Each box's cropped CONTENT matches via SSIM at or above CONTENT_THRESHOLD.
-
-SAFETY: confirmed duplicates (image + label) are MOVED to a review folder,
-nothing is deleted.
-
-NOTE: this version processes every candidate group with SSIM confirmation,
-no matter how large -- nothing is skipped. Large groups will just take
-longer to confirm.
-
-Usage:
-    pip install pillow numpy scikit-image imagehash --break-system-packages
-    python dedupe_by_label_area_ssim.py
-"""
-
 import shutil
 import sys
 from pathlib import Path
