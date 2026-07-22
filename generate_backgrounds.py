@@ -1,25 +1,3 @@
-"""
-generate_backgrounds.py
-
-Synthesize BACKGROUND (no-rat) images for Edge Impulse from your EXISTING
-labeled dataset, for when you have no separate empty-scene footage.
-
-Idea: every image contains a rat, but the rat usually covers only part of the
-frame. The YOLO boxes tell us exactly where the rat is NOT, so we crop a large
-rat-free square -> a real "empty station" background (same floor, food bowl,
-shadows, lighting), with zero rat. We then apply the SAME ESP32-CAM
-domain-randomization look as the positives (so style can't be used as a shortcut)
-and write them into datasets/ei_curated/{training,testing}/ in the Edge Impulse
-CLI label format (empty boundingBoxes = background sample).
-
-Run:   python generate_backgrounds.py
-Then:  edge-impulse-uploader --directory datasets/ei_curated
-       (only the new bg_*.jpg upload; existing images are skipped by hash)
-       -> Studio: regenerate features + retrain.
-
-Requires: pillow, numpy, imagehash
-"""
-
 import json
 import random
 from pathlib import Path
@@ -34,7 +12,7 @@ LABELS_DIR = Path("datasets/merged_dataset/labels")
 CURATED_DIR = Path("datasets/ei_curated")      # where the positives already live
 PREFIX = "bg_"
 
-TARGET_BG = 600            # total backgrounds to create (~12-15% of positives)
+TARGET_BG = 350            # total backgrounds to create (~15-18% of positives)
 TRAIN_RATIO = 0.8          # split, same as the positives
 MIN_SIDE = 120             # min side (px) of a usable rat-free square
 MARGIN = 6                 # px kept away from any rat box
