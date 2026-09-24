@@ -42,7 +42,7 @@
 // ---- EDIT THESE ----
 const char *WIFI_SSID     = "MAXBOX5G_AF58";
 const char *WIFI_PASSWORD = "vmg6mub4kw7k";     // do NOT commit real credentials
-const float DETECT_THRESHOLD = 0.6f;            // per-cell cutoff (raised 0.5->0.6 to suppress weak/object false activations)
+const float DETECT_THRESHOLD = 0.4f;            // best balanced object-level F1 in the notebook; use 0.3f for max recall
 
 // Temporal filter (N-of-M frame voting): raise a CONFIRMED alarm only when a rat
 // is seen in >= TEMPORAL_MIN_HITS of the last TEMPORAL_WINDOW analysed frames. A
@@ -165,15 +165,36 @@ bool modelBegin() {
   return true;
 }
 
-// RGB888 (fmt2rgb888 gives B,G,R) -> 96x96 grayscale (ITU-R 601 luma), nearest neighbor.
+static inline uint8_t rgbLumaAt(const uint8_t* src, int srcW, int x, int y) {
+  const uint8_t* p = src + (size_t)(y * srcW + x) * 3;   // p[0]=B p[1]=G p[2]=R
+  return (uint8_t)((77u * p[2] + 150u * p[1] + 29u * p[0]) >> 8);
+}
+
+// RGB888 (fmt2rgb888 gives B,G,R) -> 96x96 grayscale (ITU-R 601 luma), bilinear resize.
 void frameToGray(const uint8_t* src, int srcW, int srcH) {
   for (int y = 0; y < IN_H; y++) {
-    int sy = y * srcH / IN_H;
+    float fy = ((float)y + 0.5f) * srcH / IN_H - 0.5f;
+    int y0 = (int)floorf(fy);
+    float wy = fy - y0;
+    if (y0 < 0) { y0 = 0; wy = 0.0f; }
+    int y1 = y0 + 1;
+    if (y1 >= srcH) y1 = srcH - 1;
+
     for (int x = 0; x < IN_W; x++) {
-      int sx = x * srcW / IN_W;
-      const uint8_t* p = src + (size_t)(sy * srcW + sx) * 3;   // p[0]=B p[1]=G p[2]=R
-      uint32_t l = (77u * p[2] + 150u * p[1] + 29u * p[0]) >> 8;
-      gray_input[y * IN_W + x] = (uint8_t) l;
+      float fx = ((float)x + 0.5f) * srcW / IN_W - 0.5f;
+      int x0 = (int)floorf(fx);
+      float wx = fx - x0;
+      if (x0 < 0) { x0 = 0; wx = 0.0f; }
+      int x1 = x0 + 1;
+      if (x1 >= srcW) x1 = srcW - 1;
+
+      float l00 = rgbLumaAt(src, srcW, x0, y0);
+      float l01 = rgbLumaAt(src, srcW, x1, y0);
+      float l10 = rgbLumaAt(src, srcW, x0, y1);
+      float l11 = rgbLumaAt(src, srcW, x1, y1);
+      float top = l00 + (l01 - l00) * wx;
+      float bot = l10 + (l11 - l10) * wx;
+      gray_input[y * IN_W + x] = (uint8_t)lroundf(top + (bot - top) * wy);
     }
   }
 }

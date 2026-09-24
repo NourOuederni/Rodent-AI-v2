@@ -26,6 +26,7 @@ Requires: pillow, numpy, imagehash
 
 import json
 import math
+import os
 import random
 from pathlib import Path
 
@@ -39,14 +40,14 @@ LABELS_DIR = Path("datasets/merged_dataset/labels")
 CURATED_DIR = Path("datasets/ei_curated")
 PREFIX = "neg_"
 
-TARGET_NEG = 200           # object-negatives to create (~10% of positives)
+TARGET_NEG = int(os.environ.get("TARGET_NEG", "1000"))  # object-negatives to create
 TRAIN_RATIO = 0.8          # split, same as the rest
 MIN_SIDE = 140             # min side (px) of a usable rat-free square
 MARGIN = 6                 # px kept away from any rat box
 PHASH_THRESHOLD = 8        # dedup base scenes for diversity
 OBJ_MIN = 1                # min objects pasted per image
 OBJ_MAX = 3                # max objects pasted per image
-RANDOM_SEED = 123
+RANDOM_SEED = 20260727     # changed so this run adds DIFFERENT negatives than before
 JPEG_QUALITY = 90
 
 # ESP32-CAM look applied AFTER pasting (same spirit as the other scripts)

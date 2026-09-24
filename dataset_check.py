@@ -94,9 +94,10 @@ def main():
                 malformed_count += 1
                 rows.append([img_path.name, "malformed_label", problem])
 
-        pct = i / total * 100 if total else 100
-        sys.stdout.write(f"\r  checked {i}/{total} ({pct:.1f}%)")
-        sys.stdout.flush()
+        if i == total or i % 100 == 0:
+            pct = i / total * 100 if total else 100
+            sys.stdout.write(f"\r  checked {i}/{total} ({pct:.1f}%)")
+            sys.stdout.flush()
 
     print()
 
