@@ -47,8 +47,8 @@
 // ---- EDIT THESE ----------------------------------------------------------
 //const char *WIFI_SSID     = "MAXBOX5G_AF58";
 //const char *WIFI_PASSWORD = "vmg6mub4kw7k";
-const char *WIFI_SSID     = "CST";
-const char *WIFI_PASSWORD = "@dmin123";
+const char *WIFI_SSID     = "ENITWireless";
+const char *WIFI_PASSWORD = "";
 const char *DEVICE_NAME   = "node-01";          // unique per device in the fleet
 
 const float    DETECT_THRESHOLD    = 0.5f;   // only strong detections count
