@@ -26,6 +26,7 @@ Requires: pillow, numpy, imagehash   (pip install pillow numpy imagehash)
 """
 
 import json
+import os
 import random
 from pathlib import Path
 
@@ -39,8 +40,8 @@ LABELS_DIR = Path("datasets/merged_dataset/labels")
 OUTPUT_DIR = Path("datasets/ei_curated")
 LABEL_NAME = "rat"
 
-TARGET_COUNT = 1500        # number of source images to curate (before augmenting)
-MAX_PER_SCENE = 3          # cap near-duplicate frames from the same scene
+TARGET_COUNT = int(os.environ.get("TARGET_COUNT", "1800"))  # source images before augmenting
+MAX_PER_SCENE = int(os.environ.get("MAX_PER_SCENE", "4"))    # near-duplicate cap per scene
 PHASH_THRESHOLD = 8        # lower = stricter grouping of "same scene"
 FAVOR_GRAYSCALE = True     # prefer images already close to the IR/grayscale look
 
@@ -51,7 +52,7 @@ MAX_ASPECT = 2.0           # skip very wide images (width/height above this)
 COLLAGE_GUTTER_STD = 7.0   # a near-uniform interior line (low row/col std) = candidate
 COLLAGE_SIDE_TEXTURE = 22.0  # ...only a real divider if textured content is on BOTH sides
 
-AUG_PER_IMAGE = 2          # augmented copies per curated image (0 = curate only)
+AUG_PER_IMAGE = int(os.environ.get("AUG_PER_IMAGE", "2"))    # augmented copies per curated image
 TRAIN_RATIO = 0.8          # source-level split; a source + its augs stay together
 RANDOM_SEED = 42
 JPEG_QUALITY = 90
@@ -258,8 +259,6 @@ def main():
         print("Nothing selected; check your dataset paths.")
         return
 
-    # Split at the SOURCE-image level so an image and all of its augmentations
-    # land in the same set -> no train/test leakage.
     random.shuffle(chosen)
     n_train = int(len(chosen) * TRAIN_RATIO)
     splits = [
@@ -291,9 +290,7 @@ def main():
                 idx += 1
 
         labels_path = out_dir / "bounding_boxes.labels"
-        # CLI-uploader format: dict keyed by filename + a "type" field.
-        # (The Studio browser uploader silently ignores this file; the
-        #  files-array export format is rejected by the CLI as "Invalid type".)
+
         bboxes = {e["path"]: e["boundingBoxes"] for e in entries}
         labels_path.write_text(json.dumps(
             {"version": 1, "type": "bounding-box-labels",

@@ -1,26 +1,5 @@
-"""
-generate_backgrounds.py
-
-Synthesize BACKGROUND (no-rat) images for Edge Impulse from your EXISTING
-labeled dataset, for when you have no separate empty-scene footage.
-
-Idea: every image contains a rat, but the rat usually covers only part of the
-frame. The YOLO boxes tell us exactly where the rat is NOT, so we crop a large
-rat-free square -> a real "empty station" background (same floor, food bowl,
-shadows, lighting), with zero rat. We then apply the SAME ESP32-CAM
-domain-randomization look as the positives (so style can't be used as a shortcut)
-and write them into datasets/ei_curated/{training,testing}/ in the Edge Impulse
-CLI label format (empty boundingBoxes = background sample).
-
-Run:   python generate_backgrounds.py
-Then:  edge-impulse-uploader --directory datasets/ei_curated
-       (only the new bg_*.jpg upload; existing images are skipped by hash)
-       -> Studio: regenerate features + retrain.
-
-Requires: pillow, numpy, imagehash
-"""
-
 import json
+import os
 import random
 from pathlib import Path
 
@@ -34,12 +13,12 @@ LABELS_DIR = Path("datasets/merged_dataset/labels")
 CURATED_DIR = Path("datasets/ei_curated")      # where the positives already live
 PREFIX = "bg_"
 
-TARGET_BG = 600            # total backgrounds to create (~12-15% of positives)
+TARGET_BG = int(os.environ.get("TARGET_BG", "1000"))  # new backgrounds to add this run
 TRAIN_RATIO = 0.8          # split, same as the positives
 MIN_SIDE = 120             # min side (px) of a usable rat-free square
 MARGIN = 6                 # px kept away from any rat box
 PHASH_THRESHOLD = 8        # dedup: skip backgrounds too similar to accepted ones
-RANDOM_SEED = 42
+RANDOM_SEED = 20260727     # changed so this run picks DIFFERENT scenes than before
 JPEG_QUALITY = 90
 
 # match the positives' style distribution / ESP32-CAM look
@@ -165,7 +144,16 @@ def main():
     print(f"Scanning up to {len(imgs)} images for rat-free regions "
           f"(target {TARGET_BG})...")
 
+    # Seed the dedup set with hashes of the backgrounds we ALREADY have, so this
+    # run adds genuinely new/different backgrounds instead of recreating them.
     accepted_hashes = []
+    for d in (train_dir, test_dir):
+        for bp in d.glob(f"{PREFIX}*.jpg"):
+            try:
+                accepted_hashes.append(imagehash.phash(Image.open(bp).convert("RGB")))
+            except Exception:
+                pass
+    print(f"  seeded dedup with {len(accepted_hashes)} existing backgrounds")
     crops = []
     for p in imgs:
         if len(crops) >= TARGET_BG:
