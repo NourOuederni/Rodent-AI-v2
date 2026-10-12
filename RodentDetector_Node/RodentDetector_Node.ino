@@ -45,10 +45,10 @@
 #include "cloud_post.h"
 
 // ---- EDIT THESE ----------------------------------------------------------
-//const char *WIFI_SSID     = "MAXBOX5G_AF58";
-//const char *WIFI_PASSWORD = "vmg6mub4kw7k";
-const char *WIFI_SSID     = "ENITWireless";
-const char *WIFI_PASSWORD = "";
+const char *WIFI_SSID     = "MAXBOX5G_AF58";
+const char *WIFI_PASSWORD = "vmg6mub4kw7k";
+//const char *WIFI_SSID     = "ENITWireless";
+//const char *WIFI_PASSWORD = "";
 const char *DEVICE_NAME   = "node-01";          // unique per device in the fleet
 
 const float    DETECT_THRESHOLD    = 0.5f;   // only strong detections count
@@ -107,20 +107,30 @@ WebServer server(80);
 
 bool initCamera() {
   camera_config_t c;
+  memset(&c, 0, sizeof(c));            // clear every field first
   c.ledc_channel = LEDC_CHANNEL_0; c.ledc_timer = LEDC_TIMER_0;
   c.pin_d0 = Y2_GPIO_NUM; c.pin_d1 = Y3_GPIO_NUM; c.pin_d2 = Y4_GPIO_NUM; c.pin_d3 = Y5_GPIO_NUM;
   c.pin_d4 = Y6_GPIO_NUM; c.pin_d5 = Y7_GPIO_NUM; c.pin_d6 = Y8_GPIO_NUM; c.pin_d7 = Y9_GPIO_NUM;
   c.pin_xclk = XCLK_GPIO_NUM; c.pin_pclk = PCLK_GPIO_NUM;
   c.pin_vsync = VSYNC_GPIO_NUM; c.pin_href = HREF_GPIO_NUM;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  c.pin_sccb_sda = SIOD_GPIO_NUM; c.pin_sccb_scl = SIOC_GPIO_NUM;
+#else
   c.pin_sscb_sda = SIOD_GPIO_NUM; c.pin_sscb_scl = SIOC_GPIO_NUM;
+#endif
   c.pin_pwdn = PWDN_GPIO_NUM; c.pin_reset = RESET_GPIO_NUM;
-  c.xclk_freq_hz = 10000000;
+  c.xclk_freq_hz = 20000000;           // same as the working example
   c.pixel_format = PIXFORMAT_JPEG;
   c.frame_size   = FRAMESIZE_QVGA;
   c.jpeg_quality = 12;
   c.fb_count     = 2;
   c.fb_location  = CAMERA_FB_IN_PSRAM;
-  return esp_camera_init(&c) == ESP_OK;
+  c.grab_mode    = CAMERA_GRAB_LATEST;
+  if (esp_camera_init(&c) != ESP_OK) return false;
+
+  sensor_t *s = esp_camera_sensor_get();
+  if (s && s->id.PID == OV3660_PID) s->set_vflip(s, 1);   // remove if the picture is already upright
+  return true;
 }
 
 // ───────────────────── Model ─────────────────────
